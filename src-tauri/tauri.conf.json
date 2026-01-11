@@ -1,0 +1,57 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devPath": "http://localhost:5173",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "Enderfall Hub",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "open": true
+      },
+      "fs": {
+        "readFile": true,
+        "writeFile": true,
+        "createDir": true,
+        "removeFile": true,
+        "scope": ["$APPDATA/Enderfall/**"]
+      },
+      "http": {
+        "all": true,
+        "scope": ["https://wsjjasupxnzinvopxgum.supabase.co/*"]
+      },
+      "shell": {
+        "open": true
+      }
+    },
+    "windows": [
+      {
+        "title": "Enderfall Hub",
+        "width": 1440,
+        "height": 900,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "bundle": {
+      "active": true,
+      "identifier": "com.enderfall.appbrowser",
+      "targets": "all",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ]
+    }
+  }
+}

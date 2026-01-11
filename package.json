@@ -11,7 +11,8 @@
     "dev:tauri": "tauri dev",
     "build:tauri": "tauri build",
     "dev:web": "vite",
-    "build:web": "vite build"
+    "build:web": "vite build",
+    "postbuild": "node scripts/rename-msi.cjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^1.5.0",

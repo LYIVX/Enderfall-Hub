@@ -756,6 +756,11 @@ const AppContent = () => {
 
   useEffect(() => {
     if (!isTauri) return;
+    void refreshInstallStatus();
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
     invoke<string>("get_current_exe_path")
       .then((path) => setAppBrowserPath(path))
       .catch(() => {});

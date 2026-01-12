@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+ï»¿import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { FaDownload, FaSyncAlt, FaTimes, FaTrashAlt } from "react-icons/fa";
 import { listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/api/http";
@@ -777,6 +777,11 @@ const AppContent = () => {
       })
       .catch(() => {});
   }, []);
+  useEffect(() => {
+    if (!isTauri) return;
+    void refreshInstallStatus();
+  }, [defaultInstallDirs]);
+
 
   useEffect(() => {
     if (!isTauri) return;
@@ -1063,7 +1068,7 @@ const AppContent = () => {
       setReleaseNotesOpen(true);
       return;
     }
-    setReleaseNotesTitle(`${appName} · v${entry.version}`);
+    setReleaseNotesTitle(`${appName} ï¿½ v${entry.version}`);
     setReleaseNotesBody(null);
     setReleaseNotesOpen(true);
     try {
@@ -1206,6 +1211,7 @@ const AppContent = () => {
   const appCards = useMemo(
     () =>
       apps.map((app) => {
+        const showDevActions = import.meta.env.DEV && isTauri;
         const isAdmin =
           profile?.is_admin ??
           ((user?.user_metadata as Record<string, unknown> | undefined)?.is_admin as boolean | undefined) ??
@@ -1217,7 +1223,7 @@ const AppContent = () => {
         const updateInfo = getManifestEntry(updateManifest, app.id);
         const canInstall = Boolean(updateInfo?.installerUrl);
         const installPath = getResolvedInstallExePath(app, defaultInstallDirs[app.id]);
-        const devAvailable = devStatus[app.id] ?? false;
+        const devAvailable = showDevActions && (devStatus[app.id] ?? false);
         const installedVersion = getStoredInstallVersion(app.id);
         const updateAvailable =
           !!installedVersion &&
@@ -1610,6 +1616,8 @@ export default function App() {
     </AuthProvider>
   );
 }
+
+
 
 
 

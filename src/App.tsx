@@ -71,7 +71,7 @@ const apps: AppInfo[] = [
       "linear-gradient(160deg, rgba(0, 229, 255, 0.45), rgba(124, 77, 255, 0.45), rgba(255, 77, 210, 0.25))",
     installSubdir: "PFiles\\Ender Transfer",
     exeName: "Ender Transfer.exe",
-    devWorkspaceDir: "D:\\WorkSpaces\\Enderfall\\Apps",
+    devWorkspaceDir: devRoot ? `${devRoot}\\Enderfall\\Apps` : undefined,
     devCommand: ["pnpm", "--filter", "ftpbrowser", "dev"],
   },
   {
@@ -87,7 +87,7 @@ const apps: AppInfo[] = [
       "linear-gradient(160deg, rgba(255, 134, 200, 0.5), rgba(226, 85, 161, 0.35), rgba(125, 214, 246, 0.35))",
     installSubdir: "PFiles\\Character Creation",
     exeName: "Character Creation.exe",
-    devWorkspaceDir: "D:\\WorkSpaces\\Enderfall\\Apps",
+    devWorkspaceDir: devRoot ? `${devRoot}\\Enderfall\\Apps` : undefined,
     devCommand: ["pnpm", "--filter", "character-atelier-sheet", "dev"],
   },
 ];
@@ -106,6 +106,7 @@ const IconChevronDown = () => (
 );
 
 const isTauri = typeof window !== "undefined" && "__TAURI_IPC__" in window;
+const devRoot = ((import.meta as ImportMeta).env.VITE_DEV_ROOT as string | undefined) ?? "";
 const authOverrideKey = "appbrowser-auth-override";
 
 const getOverrideTokens = () => {
@@ -1621,6 +1622,11 @@ export default function App() {
     </AuthProvider>
   );
 }
+
+
+
+
+
 
 
 

@@ -57,6 +57,9 @@ const themeOptions: { value: ThemeMode; label: string }[] = [
   { value: "dark", label: "Dark" },
 ];
 
+const isTauri = typeof window !== "undefined" && "__TAURI_IPC__" in window;
+const devRoot = ((import.meta as ImportMeta).env.VITE_DEV_ROOT as string | undefined) ?? "";
+
 const apps: AppInfo[] = [
   {
     id: "ftp-browser",
@@ -105,8 +108,6 @@ const IconChevronDown = () => (
   </svg>
 );
 
-const isTauri = typeof window !== "undefined" && "__TAURI_IPC__" in window;
-const devRoot = ((import.meta as ImportMeta).env.VITE_DEV_ROOT as string | undefined) ?? "";
 const authOverrideKey = "appbrowser-auth-override";
 
 const getOverrideTokens = () => {

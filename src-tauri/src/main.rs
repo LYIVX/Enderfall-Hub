@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use msi_extract::MsiExtractor;
 use reqwest::blocking::Client;
+use tauri::Manager;
 
 #[cfg(target_os = "windows")]
 fn create_shortcut(shortcut_path: &Path, target_path: &Path, working_dir: &Path) -> Result<(), String> {
@@ -106,6 +107,61 @@ fn run_installer(path: String, args: Vec<String>) -> Result<(), String> {
       status.code()
     ))
   }
+}
+
+#[tauri::command]
+fn run_dev_app(cwd: String, command: Vec<String>) -> Result<(), String> {
+  if command.is_empty() {
+    return Err("Missing dev command.".to_string());
+  }
+  #[cfg(target_os = "windows")]
+  let mut cmd = {
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.arg("/c");
+    cmd.args(&command);
+    cmd
+  };
+  #[cfg(not(target_os = "windows"))]
+  let mut cmd = {
+    let mut cmd = std::process::Command::new(&command[0]);
+    if command.len() > 1 {
+      cmd.args(&command[1..]);
+    }
+    cmd
+  };
+  cmd.current_dir(cwd);
+  cmd.spawn().map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+#[tauri::command]
+fn uninstall_app(install_dir: String, app_name: String) -> Result<(), String> {
+  let install_path = PathBuf::from(&install_dir);
+  if install_path.exists() {
+    std::fs::remove_dir_all(&install_path).map_err(|e| e.to_string())?;
+  }
+
+  if let Some(desktop) = tauri::api::path::desktop_dir() {
+    let shortcut = desktop.join(format!("{}.lnk", app_name));
+    if shortcut.exists() {
+      let _ = std::fs::remove_file(shortcut);
+    }
+  }
+
+  if let Ok(appdata) = std::env::var("APPDATA") {
+    let start_menu = PathBuf::from(appdata)
+      .join("Microsoft")
+      .join("Windows")
+      .join("Start Menu")
+      .join("Programs")
+      .join("Enderfall")
+      .join(format!("{}.lnk", app_name));
+    if start_menu.exists() {
+      let _ = std::fs::remove_file(start_menu);
+    }
+  }
+
+  Ok(())
 }
 
 #[tauri::command]
@@ -225,16 +281,35 @@ fn get_current_exe_path() -> Result<String, String> {
     .map(|path| path.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn get_program_files_dir() -> Result<String, String> {
+  std::env::var("ProgramFiles").map_err(|e| e.to_string())
+}
+
 fn main() {
-  tauri::Builder::default()
+  let builder = tauri::Builder::default();
+  let builder = if cfg!(debug_assertions) {
+    builder
+  } else {
+    builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+      if let Some(window) = app.get_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+      }
+    }))
+  };
+  builder
     .invoke_handler(tauri::generate_handler![
       path_exists,
       copy_installer,
       launch_path,
       run_installer,
+      run_dev_app,
+      uninstall_app,
       install_msi_payload,
       download_installer,
-      get_current_exe_path
+      get_current_exe_path,
+      get_program_files_dir
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

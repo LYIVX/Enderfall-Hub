@@ -1,14 +1,14 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
-import { FaChevronDown, FaChevronUp, FaTimes } from "react-icons/fa";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { FaDownload, FaSyncAlt, FaTimes, FaTrashAlt } from "react-icons/fa";
 import { listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/api/http";
 import { open as openDialog } from "@tauri-apps/api/dialog";
 import { open as openShell } from "@tauri-apps/api/shell";
 import { invoke } from "@tauri-apps/api/tauri";
-import { appDataDir, join } from "@tauri-apps/api/path";
+import { appDataDir, join, localDataDir } from "@tauri-apps/api/path";
 import { AuthProvider, useAuth } from "./lib/auth";
-import { clearLaunchToken, writeLaunchToken } from "@enderfall/runtime";
-import { applyTheme, getStoredTheme } from "@enderfall/ui";
+import { clearLaunchToken, writeAppBrowserPath, writeLaunchToken } from "@enderfall/runtime";
+import { Button, Dropdown, Input, MainHeader, Panel, StackedCard, applyTheme, getStoredTheme } from "@enderfall/ui";
 import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from "./lib/supabase";
 
 type ThemeMode = "galaxy" | "system" | "light" | "dark";
@@ -43,10 +43,10 @@ type AppInfo = {
   icon?: string;
   iconLabel?: string;
   supportsPremium: boolean;
-  installDir?: string;
   installSubdir?: string;
   exeName?: string;
-  installerPath?: string | null;
+  devWorkspaceDir?: string;
+  devCommand?: string[];
   installerArgs?: string[];
 };
 
@@ -67,11 +67,12 @@ const apps: AppInfo[] = [
     tags: ["Transfers", "Previews", "Queues"],
     icon: "/brand/ftp-logo.png",
     supportsPremium: true,
-    installDir: "C:\\Users\\tommy\\AppData\\Local\\FTPBrowser",
-    installSubdir: "PFiles\\FTPBrowser",
-    exeName: "FTPBrowser.exe",
-    installerPath:
-      "D:\\WorkSpaces\\Enderfall\\Apps\\FTPBrowser\\src-tauri\\target\\release\\bundle\\msi\\FTPBrowser_0.1.0_x64_en-US.msi",
+    cardGradient:
+      "linear-gradient(160deg, rgba(0, 229, 255, 0.45), rgba(124, 77, 255, 0.45), rgba(255, 77, 210, 0.25))",
+    installSubdir: "PFiles\\Ender Transfer",
+    exeName: "Ender Transfer.exe",
+    devWorkspaceDir: "D:\\WorkSpaces\\Enderfall\\Apps",
+    devCommand: ["pnpm", "--filter", "ftpbrowser", "dev"],
   },
   {
     id: "character-creation-sheet",
@@ -82,7 +83,12 @@ const apps: AppInfo[] = [
     tags: ["Atelier", "Sheets", "Profiles"],
     iconLabel: "CC",
     supportsPremium: true,
-    installerPath: null,
+    cardGradient:
+      "linear-gradient(160deg, rgba(255, 134, 200, 0.5), rgba(226, 85, 161, 0.35), rgba(125, 214, 246, 0.35))",
+    installSubdir: "PFiles\\Character Creation",
+    exeName: "Character Creation.exe",
+    devWorkspaceDir: "D:\\WorkSpaces\\Enderfall\\Apps",
+    devCommand: ["pnpm", "--filter", "character-atelier-sheet", "dev"],
   },
 ];
 
@@ -132,11 +138,11 @@ const setStoredInstallDir = (appId: string, path: string) => {
   localStorage.setItem(`appbrowser-install-dir-${appId}`, path);
 };
 
-const getInstallBaseDir = (app: AppInfo) =>
-  getStoredInstallDir(app.id) || app.installDir || "";
+const getResolvedInstallBaseDir = (app: AppInfo, fallbackDir?: string) =>
+  getStoredInstallDir(app.id) || fallbackDir || "";
 
-const getInstallExePath = (app: AppInfo) => {
-  const baseDir = getInstallBaseDir(app);
+const getResolvedInstallExePath = (app: AppInfo, fallbackDir?: string) => {
+  const baseDir = getResolvedInstallBaseDir(app, fallbackDir);
   if (!baseDir || !app.exeName) return null;
   const subdir = app.installSubdir ? `\\${app.installSubdir}` : "";
   return `${baseDir}${subdir}\\${app.exeName}`;
@@ -167,6 +173,9 @@ const compareVersions = (a: string, b: string) => {
   }
   return 0;
 };
+
+const getManifestEntry = (manifest: UpdateManifest | null, appId: string) =>
+  manifest?.apps.find((entry) => entry.id === appId);
 
 const LoginModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => {
   const [busy, setBusy] = useState(false);
@@ -398,7 +407,7 @@ const LoginModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void 
           {mode === "email-signup" ? (
             <label>
               Display name
-              <input
+              <Input
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 placeholder="Your name"
@@ -407,7 +416,7 @@ const LoginModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void 
           ) : null}
           <label>
             Email
-            <input
+            <Input
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
@@ -416,7 +425,7 @@ const LoginModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void 
           </label>
           <label>
             Password
-            <input
+            <Input
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -456,6 +465,7 @@ const InstallModal = ({
   isOpen,
   onClose,
   onInstall,
+  defaultInstallDir,
 }: {
   app: AppInfo | null;
   isOpen: boolean;
@@ -465,20 +475,21 @@ const InstallModal = ({
     createDesktopShortcut: boolean;
     createStartMenuShortcut: boolean;
   }) => void;
+  defaultInstallDir?: string;
 }) => {
   const [step, setStep] = useState<"location" | "shortcuts">("location");
   const [installDir, setInstallDir] = useState<string | null>(
-    app ? getInstallBaseDir(app) : null
+    app ? getResolvedInstallBaseDir(app, defaultInstallDir) : null
   );
   const [createDesktopShortcut, setCreateDesktopShortcut] = useState(true);
   const [createStartMenuShortcut, setCreateStartMenuShortcut] = useState(true);
 
   useEffect(() => {
     setStep("location");
-    setInstallDir(app ? getInstallBaseDir(app) : null);
+    setInstallDir(app ? getResolvedInstallBaseDir(app, defaultInstallDir) : null);
     setCreateDesktopShortcut(true);
     setCreateStartMenuShortcut(true);
-  }, [app, isOpen]);
+  }, [app, defaultInstallDir, isOpen]);
 
   if (!isOpen || !app) return null;
 
@@ -487,7 +498,7 @@ const InstallModal = ({
     const selected = await openDialog({
       title: `Choose install folder for ${app.name}`,
       directory: true,
-      defaultPath: installDir ?? app.installDir,
+      defaultPath: installDir ?? defaultInstallDir,
     });
     if (selected && !Array.isArray(selected)) {
       setInstallDir(selected);
@@ -510,7 +521,7 @@ const InstallModal = ({
               <label>
                 Install location
                 <div className="field-row">
-                  <input value={installDir ?? ""} readOnly />
+                  <Input value={installDir ?? ""} readOnly />
                   <button className="ghost" type="button" onClick={browseInstallDir}>
                     Browse
                   </button>
@@ -569,13 +580,100 @@ const InstallModal = ({
   );
 };
 
+const ReleaseNotesModal = ({
+  isOpen,
+  title,
+  notes,
+  onClose,
+}: {
+  isOpen: boolean;
+  title: string;
+  notes: string | null;
+  onClose: () => void;
+}) => {
+  if (!isOpen) return null;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal modal-wide" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{title}</h2>
+          <button className="icon-button" onClick={onClose} type="button" aria-label="Close">
+            <FaTimes />
+          </button>
+        </div>
+        <p className="modal-subtitle">Release notes from GitHub.</p>
+        <div className="release-notes">
+          {notes ? <pre>{notes}</pre> : <div className="card-note">Loading release notes...</div>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DownloadsModal = ({
+  isOpen,
+  items,
+  updates,
+  onClose,
+  onUpdate,
+}: {
+  isOpen: boolean;
+  items: Array<{ id: string; name: string; progress: number; message?: string }>;
+  updates: Array<{ id: string; name: string }>;
+  onClose: () => void;
+  onUpdate: (id: string) => void;
+}) => {
+  if (!isOpen) return null;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h2>Downloads</h2>
+          <button className="icon-button" onClick={onClose} type="button" aria-label="Close">
+            <FaTimes />
+          </button>
+        </div>
+        {updates.length > 0 ? (
+          <div className="download-section">
+            <div className="download-title">Updates available</div>
+            {updates.map((update) => (
+              <div className="download-row" key={update.id}>
+                <span>{update.name}</span>
+                <Button variant="warning" type="button" onClick={() => onUpdate(update.id)}>
+                  Update
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="download-section">
+          <div className="download-title">Active downloads</div>
+          {items.length === 0 ? (
+            <div className="card-note">No active downloads.</div>
+          ) : (
+            items.map((item) => (
+              <div className="download-row" key={item.id}>
+                <div className="download-meta">
+                  <span>{item.name}</span>
+                  {item.message ? <span className="card-note">{item.message}</span> : null}
+                </div>
+                <div className="progress mini">
+                  <div className="progress-bar" style={{ width: `${Math.round(item.progress * 100)}%` }} />
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const AppContent = () => {
   const { user, profile, isLoading, signOut } = useAuth();
   const [showLogin, setShowLogin] = useState(false);
-  const [showDropdown, setShowDropdown] = useState(false);
   const [menuOpen, setMenuOpen] = useState<"file" | "edit" | "view" | "help" | null>(null);
   const menuCloseRef = useRef<number | null>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() =>
     getStoredTheme({
@@ -587,10 +685,16 @@ const AppContent = () => {
 
   const [entitlements, setEntitlements] = useState<Entitlement[]>([]);
   const [installStatus, setInstallStatus] = useState<Record<string, boolean>>({});
+  const [devStatus, setDevStatus] = useState<Record<string, boolean>>({});
   const [installing, setInstalling] = useState<Record<string, boolean>>({});
   const [installProgress, setInstallProgress] = useState<Record<string, number>>({});
   const [installMessage, setInstallMessage] = useState<Record<string, string>>({});
   const [installModalAppId, setInstallModalAppId] = useState<string | null>(null);
+  const [defaultInstallDirs, setDefaultInstallDirs] = useState<Record<string, string>>({});
+  const [showDownloads, setShowDownloads] = useState(false);
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
+  const [releaseNotesTitle, setReleaseNotesTitle] = useState("Release notes");
+  const [releaseNotesBody, setReleaseNotesBody] = useState<string | null>(null);
   const [appBrowserPath, setAppBrowserPath] = useState<string | null>(null);
   const [updateManifest, setUpdateManifest] = useState<UpdateManifest | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
@@ -599,7 +703,7 @@ const AppContent = () => {
 
   useEffect(() => {
     const isGalaxy = themeMode === "galaxy";
-    document.body.classList.toggle("test-galaxy", isGalaxy);
+    document.body.classList.toggle("ef-galaxy", isGalaxy);
     const dataTheme = isGalaxy ? "dark" : themeMode;
     applyTheme(dataTheme, {
       storageKey: "themeMode",
@@ -633,6 +737,19 @@ const AppContent = () => {
     }
   };
 
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const refreshAll = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await refreshManifest();
+      await refreshInstallStatus();
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   useEffect(() => {
     refreshManifest();
   }, []);
@@ -643,6 +760,49 @@ const AppContent = () => {
       .then((path) => setAppBrowserPath(path))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!isTauri || !appBrowserPath) return;
+    void writeAppBrowserPath(appBrowserPath);
+  }, [appBrowserPath]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    localDataDir()
+      .then((baseDir) => {
+        const next: Record<string, string> = {};
+        next["ftp-browser"] = `${baseDir}\\EnderFall\\Ender Transfer`;
+        next["character-creation-sheet"] = `${baseDir}\\EnderFall\\Character Creation`;
+        setDefaultInstallDirs(next);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    const migrateDefaults = async () => {
+      const baseDir = await localDataDir();
+      const baseLower = baseDir.toLowerCase();
+      apps.forEach((app) => {
+        if (installStatus[app.id]) return;
+        const stored = getStoredInstallDir(app.id);
+        const nextDefault = defaultInstallDirs[app.id];
+        if (!nextDefault) return;
+        if (!stored) {
+          setStoredInstallDir(app.id, nextDefault);
+          return;
+        }
+        const storedLower = stored.toLowerCase();
+        const isLocalData = storedLower.startsWith(baseLower);
+        const isProgramFiles =
+          storedLower.includes("\\program files\\") || storedLower.includes("\\program files (x86)\\");
+        if (isLocalData || isProgramFiles) {
+          setStoredInstallDir(app.id, nextDefault);
+        }
+      });
+    };
+    void migrateDefaults();
+  }, [defaultInstallDirs, installStatus]);
 
   useEffect(() => {
     if (!updateManifest) return;
@@ -662,46 +822,23 @@ const AppContent = () => {
     let active = true;
 
     const load = async () => {
-      if (isTauri) {
-        const tokens = getOverrideTokens();
-        const accessToken = tokens?.access_token;
-        if (!accessToken || !supabaseUrl || !supabaseAnonKey) {
-          setEntitlements([]);
-          return;
-        }
-        try {
-          const response = await tauriFetch<Entitlement[]>(
-            `${supabaseUrl}/rest/v1/entitlements?select=app_id,tier,active&user_id=eq.${encodeURIComponent(
-              user.id
-            )}&active=eq.true`,
-            {
-              method: "GET",
-              headers: {
-                apikey: supabaseAnonKey,
-                Authorization: `Bearer ${accessToken}`,
-                Accept: "application/json",
-              },
-            }
-          );
-          if (!active) return;
-          if (response.status >= 400) {
-            console.warn("Failed to load entitlements.", response.status);
-            setEntitlements([]);
-            return;
-          }
-          setEntitlements(response.data ?? []);
-        } catch (error) {
-          if (!active) return;
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn("Failed to load entitlements.", message);
-          setEntitlements([]);
-        }
-        return;
-      }
-
       if (!supabase) {
         setEntitlements([]);
         return;
+      }
+
+      if (isTauri) {
+        const tokens = getOverrideTokens();
+        if (tokens?.access_token && tokens?.refresh_token) {
+          try {
+            await supabase.auth.setSession({
+              access_token: tokens.access_token,
+              refresh_token: tokens.refresh_token,
+            });
+          } catch {
+            // ignore session sync failures
+          }
+        }
       }
 
       const { data, error } = await supabase
@@ -733,6 +870,12 @@ const AppContent = () => {
         return;
       }
       const allowedApps = entitlements.map((entry) => entry.app_id);
+      const displayName =
+        profile?.display_name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Account";
+      const rawAvatarUrl =
+        profile?.avatar_url || (user?.user_metadata?.avatar_url as string | undefined) || null;
+      const avatarUrl =
+        rawAvatarUrl && !rawAvatarUrl.includes("googleusercontent.com") ? rawAvatarUrl : null;
       const expiresAt = Date.now() + 5 * 60 * 1000;
       await Promise.all(
         apps.map((app) =>
@@ -743,6 +886,9 @@ const AppContent = () => {
             entitlements: allowedApps,
             expiresAt,
             appBrowserPath,
+            displayName,
+            avatarUrl,
+            email: user.email ?? null,
           })
         )
       );
@@ -757,7 +903,7 @@ const AppContent = () => {
 
   const downloadUpdate = async (app: AppInfo, update: UpdateEntry) => {
     if (!isTauri || !update.installerUrl) return;
-    const installDir = getInstallBaseDir(app) || app.installDir;
+    const installDir = getResolvedInstallBaseDir(app, defaultInstallDirs[app.id]);
     if (!installDir || !app.exeName) {
       setInstallMessage((prev) => ({ ...prev, [app.id]: "Missing install location." }));
       return;
@@ -859,7 +1005,7 @@ const AppContent = () => {
     const checkInstalled = async () => {
       const next: Record<string, boolean> = {};
       for (const app of apps) {
-        const installPath = getInstallExePath(app);
+        const installPath = getResolvedInstallExePath(app, defaultInstallDirs[app.id]);
         if (!installPath) {
           next[app.id] = false;
           continue;
@@ -876,18 +1022,6 @@ const AppContent = () => {
 
     checkInstalled();
   }, []);
-
-  useEffect(() => {
-    const handleClick = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setShowDropdown(false);
-      }
-    };
-    if (showDropdown) {
-      document.addEventListener("mousedown", handleClick);
-    }
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [showDropdown]);
 
   const openMenu = (name: "file" | "edit" | "view" | "help") => {
     if (menuCloseRef.current !== null) {
@@ -909,6 +1043,9 @@ const AppContent = () => {
 
   const displayName =
     profile?.display_name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Account";
+  const rawAvatarUrl =
+    profile?.avatar_url || (user?.user_metadata?.avatar_url as string | undefined) || null;
+  const avatarUrl = rawAvatarUrl && !rawAvatarUrl.includes("googleusercontent.com") ? rawAvatarUrl : null;
 
   const openAccount = () => {
     const url = "https://enderfall.co.uk/profile";
@@ -919,9 +1056,38 @@ const AppContent = () => {
     }
   };
 
+  const openReleaseNotes = async (entry: UpdateEntry | null, appName: string) => {
+    if (!entry?.releaseNotesUrl) {
+      setReleaseNotesTitle(`${appName} release notes`);
+      setReleaseNotesBody("Release notes are not available yet.");
+      setReleaseNotesOpen(true);
+      return;
+    }
+    setReleaseNotesTitle(`${appName} � v${entry.version}`);
+    setReleaseNotesBody(null);
+    setReleaseNotesOpen(true);
+    try {
+      const match = entry.releaseNotesUrl.match(/github\.com\/([^/]+)\/([^/]+)\/releases\/tag\/(.+)$/);
+      if (!match) {
+        setReleaseNotesBody("Release notes could not be loaded.");
+        return;
+      }
+      const [, owner, repo, tag] = match;
+      const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`);
+      if (!response.ok) {
+        setReleaseNotesBody("Release notes could not be loaded.");
+        return;
+      }
+      const payload = (await response.json()) as { body?: string | null };
+      setReleaseNotesBody(payload.body ?? "Release notes are empty.");
+    } catch {
+      setReleaseNotesBody("Release notes could not be loaded.");
+    }
+  };
+
   const launchInstalledApp = async (app: AppInfo) => {
     if (!isTauri) return;
-    const installPath = getInstallExePath(app);
+    const installPath = getResolvedInstallExePath(app, defaultInstallDirs[app.id]);
     if (!installPath) return;
     await invoke("launch_path", { path: installPath });
   };
@@ -929,20 +1095,56 @@ const AppContent = () => {
   const refreshInstallStatus = async () => {
     if (!isTauri) return;
     const next: Record<string, boolean> = {};
+    const devNext: Record<string, boolean> = {};
     for (const app of apps) {
-      const installPath = getInstallExePath(app);
+      const installPath = getResolvedInstallExePath(app, defaultInstallDirs[app.id]);
       if (!installPath) {
         next[app.id] = false;
-        continue;
+      } else {
+        try {
+          const exists = await invoke<boolean>("path_exists", { path: installPath });
+          next[app.id] = exists;
+        } catch {
+          next[app.id] = false;
+        }
       }
-      try {
-        const exists = await invoke<boolean>("path_exists", { path: installPath });
-        next[app.id] = exists;
-      } catch {
-        next[app.id] = false;
+      if (app.devWorkspaceDir && app.devCommand) {
+        try {
+          devNext[app.id] = await invoke<boolean>("path_exists", { path: app.devWorkspaceDir });
+        } catch {
+          devNext[app.id] = false;
+        }
+      } else {
+        devNext[app.id] = false;
       }
     }
     setInstallStatus(next);
+    setDevStatus(devNext);
+  };
+
+  const openHubApp = async () => {
+    if (!isTauri || !appBrowserPath) return;
+    await invoke("launch_path", { path: appBrowserPath });
+  };
+
+  const uninstallApp = async (app: AppInfo) => {
+    if (!isTauri) return;
+    const installDir = getResolvedInstallBaseDir(app, defaultInstallDirs[app.id]);
+    if (!installDir) return;
+    setInstalling((prev) => ({ ...prev, [app.id]: true }));
+    setInstallMessage((prev) => ({ ...prev, [app.id]: "Uninstalling..." }));
+    try {
+      await invoke("uninstall_app", { installDir, appName: app.name });
+      localStorage.removeItem(`appbrowser-install-version-${app.id}`);
+      localStorage.removeItem(`appbrowser-install-dir-${app.id}`);
+      setInstallMessage((prev) => ({ ...prev, [app.id]: "Uninstalled." }));
+      await refreshInstallStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setInstallMessage((prev) => ({ ...prev, [app.id]: message }));
+    } finally {
+      setInstalling((prev) => ({ ...prev, [app.id]: false }));
+    }
   };
 
   const startInstall = async (
@@ -953,31 +1155,42 @@ const AppContent = () => {
       createStartMenuShortcut: boolean;
     }
   ) => {
-    if (!isTauri || !app.installerPath) return;
-    const installDir = options.installDir ?? app.installDir;
-    if (!installDir) {
+    if (!isTauri) return;
+    const updateInfo = getManifestEntry(updateManifest, app.id);
+    if (!updateInfo?.installerUrl) {
+      setInstallMessage((prev) => ({ ...prev, [app.id]: "Installer not available yet." }));
+      return;
+    }
+    const installDir =
+      options.installDir ?? getResolvedInstallBaseDir(app, defaultInstallDirs[app.id]);
+    if (!installDir || !app.exeName) {
       setInstallMessage((prev) => ({ ...prev, [app.id]: "Missing install location." }));
       return;
     }
     setStoredInstallDir(app.id, installDir);
     setInstalling((prev) => ({ ...prev, [app.id]: true }));
     setInstallProgress((prev) => ({ ...prev, [app.id]: 0 }));
-    setInstallMessage((prev) => ({ ...prev, [app.id]: "Preparing install..." }));
+    setInstallMessage((prev) => ({ ...prev, [app.id]: "Downloading installer..." }));
     try {
+      const baseDir = await appDataDir();
+      const installersDir = await join(baseDir, "Enderfall", "Installers");
+      const installerPath = await invoke<string>("download_installer", {
+        appId: app.id,
+        url: updateInfo.installerUrl,
+        destinationDir: installersDir,
+      });
+      setInstallMessage((prev) => ({ ...prev, [app.id]: "Installing..." }));
       await invoke("install_msi_payload", {
         appId: app.id,
-        installerPath: app.installerPath,
+        installerPath,
         installDir,
-        exeName: app.exeName ?? "",
+        exeName: app.exeName,
         appName: app.name,
         createDesktopShortcut: options.createDesktopShortcut,
         createStartMenuShortcut: options.createStartMenuShortcut,
       });
-      if (updateManifest) {
-        const latest = updateManifest.apps.find((entry) => entry.id === app.id);
-        if (latest?.version) {
-          setStoredInstallVersion(app.id, latest.version);
-        }
+      if (updateInfo.version) {
+        setStoredInstallVersion(app.id, updateInfo.version);
       }
       setInstallProgress((prev) => ({ ...prev, [app.id]: 1 }));
       setInstallMessage((prev) => ({ ...prev, [app.id]: "Install complete." }));
@@ -993,14 +1206,19 @@ const AppContent = () => {
   const appCards = useMemo(
     () =>
       apps.map((app) => {
-        const isAdmin = profile?.is_admin ?? false;
+        const isAdmin =
+          profile?.is_admin ??
+          ((user?.user_metadata as Record<string, unknown> | undefined)?.is_admin as boolean | undefined) ??
+          ((user?.app_metadata as Record<string, unknown> | undefined)?.is_admin as boolean | undefined) ??
+          false;
         const entitled = !!user && (isAdmin || hasAccess(entitlements, app.id));
         const premiumLocked = app.supportsPremium && !entitled;
         const isInstalled = installStatus[app.id] ?? false;
-        const canInstall = Boolean(app.installerPath);
-        const installPath = getInstallExePath(app);
+        const updateInfo = getManifestEntry(updateManifest, app.id);
+        const canInstall = Boolean(updateInfo?.installerUrl);
+        const installPath = getResolvedInstallExePath(app, defaultInstallDirs[app.id]);
+        const devAvailable = devStatus[app.id] ?? false;
         const installedVersion = getStoredInstallVersion(app.id);
-        const updateInfo = updateManifest?.apps.find((entry) => entry.id === app.id);
         const updateAvailable =
           !!installedVersion &&
           !!updateInfo?.version &&
@@ -1012,6 +1230,7 @@ const AppContent = () => {
           isInstalled,
           canInstall,
           installPath,
+          devAvailable,
           progress: installProgress[app.id] ?? 0,
           isInstalling: installing[app.id] ?? false,
           message: installMessage[app.id],
@@ -1026,136 +1245,153 @@ const AppContent = () => {
       installProgress,
       installing,
       installMessage,
+      defaultInstallDirs,
+      devStatus,
       user,
       profile,
       updateManifest,
     ]
   );
 
+  const isDevHost = appBrowserPath?.toLowerCase().includes("\\src-tauri\\target\\debug\\") ?? false;
+
+  const launchDevApp = async (app: AppInfo) => {
+    if (!isTauri || !app.devWorkspaceDir || !app.devCommand) return;
+    await invoke("run_dev_app", { cwd: app.devWorkspaceDir, command: app.devCommand });
+  };
+
+  const updateCount = appCards.filter((entry) => entry.updateAvailable).length;
+
+  const activeDownloads = appCards
+    .filter((entry) => entry.isInstalling || entry.progress > 0 || updating[entry.app.id])
+    .map((entry) => ({
+      id: entry.app.id,
+      name: entry.app.name,
+      progress: entry.progress,
+      message: entry.message,
+    }));
+
+  const pendingUpdates = appCards
+    .filter((entry) => entry.updateAvailable)
+    .map((entry) => ({ id: entry.app.id, name: entry.app.name }));
+
   return (
     <div className="page">
       <div className="stars" />
 
-      <header className="main-header">
-        <div className="header-left">
-          <div className="brand">
-            <img src="/brand/enderfall-mark.png" alt="Enderfall" className="logo" />
-            <div>
-              <div className="brand-name">Enderfall</div>
-              <div className="tagline">Galaxy tools for creators</div>
-            </div>
-          </div>
-          <div className="menu-bar">
-            <div className="menu-group" onMouseEnter={() => openMenu("file")} onMouseLeave={closeMenu}>
-              <button className="menu-button" type="button">
-                File
-              </button>
-              {menuOpen === "file" ? (
-                <div className="menu-popover" onMouseEnter={() => openMenu("file")} onMouseLeave={closeMenu}>
-                  <button className="menu-item" type="button" onClick={() => window.location.reload()}>
-                    Refresh apps
-                  </button>
-                  <div className="menu-divider" />
-                  <button className="menu-item" type="button" onClick={() => setShowLogin(true)}>
-                    Open login
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            <div className="menu-group" onMouseEnter={() => openMenu("edit")} onMouseLeave={closeMenu}>
-              <button className="menu-button" type="button">
-                Edit
-              </button>
-              {menuOpen === "edit" ? (
-                <div className="menu-popover" onMouseEnter={() => openMenu("edit")} onMouseLeave={closeMenu}>
-                  <button
-                    className="menu-item"
-                    type="button"
-                    onClick={() => navigator.clipboard?.writeText(window.location.href)}
-                  >
-                    Copy hub link
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            <div className="menu-group" onMouseEnter={() => openMenu("view")} onMouseLeave={closeMenu}>
-              <button className="menu-button" type="button">
-                View
-              </button>
-              {menuOpen === "view" ? (
-                <div className="menu-popover" onMouseEnter={() => openMenu("view")} onMouseLeave={closeMenu}>
-                  <div className="menu-item has-submenu" role="button" tabIndex={0}>
-                    <span>Theme</span>
-                    <span className="menu-sub-caret">
-                      <IconChevronDown />
-                    </span>
-                    <div className="menu-sub">
-                      {themeOptions.map((item) => (
-                        <button
-                          key={item.value}
-                          className="menu-item"
-                          type="button"
-                          onClick={() => setThemeMode(item.value)}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-            <div className="menu-group" onMouseEnter={() => openMenu("help")} onMouseLeave={closeMenu}>
-              <button className="menu-button" type="button">
-                Help
-              </button>
-              {menuOpen === "help" ? (
-                <div className="menu-popover" onMouseEnter={() => openMenu("help")} onMouseLeave={closeMenu}>
-                  <button className="menu-item" type="button" onClick={() => window.open("https://enderfall.co.uk", "_blank")}>
-                    About Enderfall
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-
-        <div className="actions">
-          {!isLoading && user ? (
-            <div className="user-section" ref={dropdownRef} data-open={showDropdown ? "true" : "false"}>
+      <MainHeader
+        logoSrc="/brand/enderfall-mark.png"
+        menus={[
+          {
+            id: "file",
+            label: "File",
+            content: (
+              <>
+                <button className="ef-menu-item" type="button" onClick={() => window.location.reload()}>
+                  Refresh apps
+                </button>
+                <div className="ef-menu-divider" />
+                <button className="ef-menu-item" type="button" onClick={() => setShowLogin(true)}>
+                  Open login
+                </button>
+              </>
+            ),
+          },
+          {
+            id: "edit",
+            label: "Edit",
+            content: (
               <button
-                className="user-button"
-                onClick={() => setShowDropdown((prev) => !prev)}
+                className="ef-menu-item"
                 type="button"
+                onClick={() => navigator.clipboard?.writeText(window.location.href)}
               >
-                <span className="avatar">
-                  {profile?.avatar_url ? (
-                    <img src={profile.avatar_url} alt={displayName} />
-                  ) : (
-                    <span className="avatar-fallback">{displayName.slice(0, 1).toUpperCase()}</span>
-                  )}
-                </span>
-                <span className="user-name">{displayName}</span>
-                <span className="chevron" aria-hidden="true">
-                  {showDropdown ? <FaChevronUp /> : <FaChevronDown />}
-                </span>
+                Copy hub link
               </button>
-              <div className="dropdown" data-open={showDropdown ? "true" : "false"}>
-                <button className="dropdown-item" type="button" onClick={openAccount}>
-                  Profile
-                </button>
-                <button className="dropdown-item" type="button" onClick={() => signOut()}>
-                  Logout
-                </button>
+            ),
+          },
+          {
+            id: "view",
+            label: "View",
+            content: (
+              <div className="ef-menu-item has-submenu" role="button" tabIndex={0}>
+                <span>Theme</span>
+                <span className="ef-menu-sub-caret">
+                  <IconChevronDown />
+                </span>
+                <div className="ef-menu-sub">
+                  {themeOptions.map((item) => (
+                    <button
+                      key={item.value}
+                      className="ef-menu-item"
+                      type="button"
+                      onClick={() => setThemeMode(item.value)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : (
-            <button className="primary" onClick={() => setShowLogin(true)}>
-              Login
+            ),
+          },
+          {
+            id: "help",
+            label: "Help",
+            content: (
+              <button
+                className="ef-menu-item"
+                type="button"
+                onClick={() => window.open("https://enderfall.co.uk", "_blank")}
+              >
+                About Enderfall
+              </button>
+            ),
+          },
+        ]}
+        menuOpen={menuOpen}
+        onOpenMenu={openMenu}
+        onCloseMenu={closeMenu}
+        actions={
+          <div className="actions">
+            <button
+              className="icon-action"
+              type="button"
+              title="Downloads"
+              onClick={() => setShowDownloads(true)}
+              disabled={!isTauri}
+            >
+              <FaDownload />
+              {updateCount > 0 ? <span className="icon-badge">{updateCount}</span> : null}
             </button>
-          )}
-        </div>
-      </header>
+            {!isLoading && user ? (
+              <Dropdown
+                variant="user"
+                name={displayName}
+                avatarUrl={avatarUrl}
+                avatarFallback={displayName.slice(0, 1).toUpperCase()}
+                items={[
+                  {
+                    label: "Open Enderfall Hub",
+                    onClick: openHubApp,
+                  },
+                  {
+                    label: "Profile",
+                    onClick: openAccount,
+                  },
+                  {
+                    label: "Logout",
+                    onClick: () => signOut(),
+                  },
+                ]}
+              />
+            ) : (
+              <button className="primary" onClick={() => setShowLogin(true)}>
+                Login
+              </button>
+            )}
+          </div>
+        }
+      />
 
       <section className="hero">
         <div className="hero-top">
@@ -1173,18 +1409,18 @@ const AppContent = () => {
           </div>
         </div>
         <div className="hero-highlights">
-          <div>
+          <Panel variant="highlight" borderWidth={1} className="hero-highlight">
             <span className="highlight-label">Premium builds</span>
             <span className="highlight-value">Desktop installs</span>
-          </div>
-          <div>
+          </Panel>
+          <Panel variant="highlight" borderWidth={1} className="hero-highlight">
             <span className="highlight-label">Themes</span>
             <span className="highlight-value">Galaxy + System</span>
-          </div>
-          <div>
+          </Panel>
+          <Panel variant="highlight" borderWidth={1} className="hero-highlight">
             <span className="highlight-label">Library</span>
             <span className="highlight-value">Unified launch</span>
-          </div>
+          </Panel>
         </div>
       </section>
 
@@ -1194,81 +1430,24 @@ const AppContent = () => {
         </div>
       ) : null}
 
-      {updateManifest ? (
-        <section className="updates">
-          <div className="updates-header">
-            <div>
-              <h2>Updates</h2>
-              <p>
-                Latest releases from GitHub
-                {updateManifest.updatedAt ? ` · Updated ${updateManifest.updatedAt}` : ""}.
-              </p>
-            </div>
-            <button className="ghost" type="button" onClick={refreshManifest} disabled={manifestLoading}>
-              {manifestLoading ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-          <div className="updates-grid">
-            {updateManifest.apps.map((entry) => {
-              const app = apps.find((item) => item.id === entry.id);
-              const installedVersion = getStoredInstallVersion(entry.id);
-              const updateAvailable =
-                installedVersion && compareVersions(entry.version, installedVersion) > 0;
-              const isAppBrowser = entry.id === "app-browser";
-              return (
-                <div className="update-card" key={entry.id}>
-                  <div className="update-meta">
-                    <div className="update-title">{entry.name}</div>
-                    <div className="update-versions">
-                      <span>Installed: {installedVersion ?? "Unknown"}</span>
-                      <span>Latest: {entry.version}</span>
-                    </div>
-                  </div>
-                  <div className="update-actions">
-                    {entry.releaseNotesUrl ? (
-                      <button className="ghost" type="button" onClick={() => openShell(entry.releaseNotesUrl!)}>
-                        Release notes
-                      </button>
-                    ) : null}
-                    {isAppBrowser && entry.installerUrl && updateAvailable ? (
-                      <button
-                        className="primary"
-                        type="button"
-                        disabled={updating[entry.id]}
-                        onClick={() => updateAppBrowser(entry)}
-                      >
-                        {updating[entry.id] ? "Updating..." : "Update"}
-                      </button>
-                    ) : app && entry.installerUrl && updateAvailable ? (
-                      <button
-                        className="primary"
-                        type="button"
-                        disabled={updating[entry.id]}
-                        onClick={() => downloadUpdate(app, entry)}
-                      >
-                        {updating[entry.id] ? "Updating..." : "Update"}
-                      </button>
-                    ) : (
-                      <button className="ghost" type="button" disabled>
-                        {updateAvailable ? "Unavailable" : "Up to date"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {updateManifest.apps.length === 0 ? (
-              <div className="card-note">No updates available.</div>
-            ) : null}
-          </div>
-        </section>
-      ) : updateError ? (
-        <div className="card-note">Failed to load updates: {updateError}</div>
-      ) : null}
+      {updateError ? <div className="card-note">Failed to load updates: {updateError}</div> : null}
 
       <section className="grid">
-        {appCards.map(({ app, entitled, premiumLocked, isInstalled, canInstall, installPath, progress, isInstalling, message, updateAvailable }) => (
-          <article className="app-card" key={app.id}>
+        {appCards.map(({ app, entitled, premiumLocked, isInstalled, canInstall, installPath, devAvailable, progress, isInstalling, message, updateAvailable, updateInfo }) => {
+          const cardStyle = app.cardGradient
+            ? ({ "--ef-stacked-image-gradient": app.cardGradient } as CSSProperties)
+            : undefined;
+          return (
+          <StackedCard
+            key={app.id}
+            variant="apps"
+            align="left"
+            showImage={true}
+            frameClassName="app-card-frame"
+            cardClassName="app-card"
+            bodyClassName="app-card-body"
+            style={cardStyle}
+          >
             <div className="card-row">
               {app.icon ? (
                 <img src={app.icon} alt={app.name} className="card-icon" />
@@ -1293,13 +1472,25 @@ const AppContent = () => {
             </div>
             <div className="card-actions">
               {isInstalled ? (
-                <button
-                  className="primary"
-                  onClick={() => launchInstalledApp(app)}
-                  disabled={!isTauri || premiumLocked}
-                >
-                  Open app
-                </button>
+                <>
+                  <button
+                    className="primary"
+                    onClick={() => launchInstalledApp(app)}
+                    disabled={!isTauri || premiumLocked}
+                  >
+                    Open app
+                  </button>
+                  <Button
+                    variant="delete"
+                    onClick={() => uninstallApp(app)}
+                    disabled={!isTauri || isInstalling}
+                  >
+                    <span className="button-icon">
+                      <FaTrashAlt />
+                    </span>
+                    Uninstall
+                  </Button>
+                </>
               ) : (
                 <button
                   className="ghost"
@@ -1309,6 +1500,39 @@ const AppContent = () => {
                   Install
                 </button>
               )}
+              {devAvailable ? (
+                <button className="ghost" type="button" onClick={() => launchDevApp(app)}>
+                  Open local (dev)
+                </button>
+              ) : null}
+              {updateAvailable && updateInfo ? (
+                <Button
+                  variant="warning"
+                  type="button"
+                  onClick={() =>
+                    app.id === "app-browser" ? updateAppBrowser(updateInfo) : downloadUpdate(app, updateInfo)
+                  }
+                  disabled={!isTauri || updating[app.id]}
+                >
+                  {updating[app.id] ? "Updating..." : "Update"}
+                </Button>
+              ) : null}
+              <Button
+                variant="info"
+                type="button"
+                onClick={() => openReleaseNotes(updateInfo ?? null, app.name)}
+              >
+                Release notes
+              </Button>
+              <button
+                className={`icon-action small ${isRefreshing ? "spin" : ""}`}
+                type="button"
+                title="Refresh"
+                onClick={refreshAll}
+                disabled={isRefreshing}
+              >
+                <FaSyncAlt />
+              </button>
               {updateAvailable ? <span className="badge-alt">Update available</span> : null}
               {app.supportsPremium && !entitled ? (
                 <button className="locked" onClick={() => setShowLogin(true)}>
@@ -1322,17 +1546,15 @@ const AppContent = () => {
               </div>
             ) : null}
             {message ? <div className="card-note">{message}</div> : null}
-            {!installPath ? (
-              <div className="card-note">Installer not available yet.</div>
-            ) : null}
+            {!canInstall ? <div className="card-note">Installer not available yet.</div> : null}
             {premiumLocked ? (
               <div className="card-note">Premium access required for desktop installs.</div>
             ) : null}
-          </article>
-        ))}
+          </StackedCard>
+        )})}
       </section>
 
-      <section className="footer-band">
+      <Panel variant="highlight" borderWidth={2} className="footer-band">
         <div>
           <h2>Need a custom tool?</h2>
           <p>We build bespoke tooling for studios, creators, and game communities.</p>
@@ -1340,13 +1562,35 @@ const AppContent = () => {
         <button className="cta-primary" onClick={() => window.open("https://enderfall.co.uk/contact", "_blank")}>
           Contact the team
         </button>
-      </section>
+      </Panel>
 
       <LoginModal isOpen={showLogin} onClose={() => setShowLogin(false)} />
+      <DownloadsModal
+        isOpen={showDownloads}
+        items={activeDownloads}
+        updates={pendingUpdates}
+        onClose={() => setShowDownloads(false)}
+        onUpdate={(id) => {
+          const entry = appCards.find((item) => item.app.id === id);
+          if (!entry?.updateInfo) return;
+          if (id === "app-browser") {
+            void updateAppBrowser(entry.updateInfo);
+          } else {
+            void downloadUpdate(entry.app, entry.updateInfo);
+          }
+        }}
+      />
+      <ReleaseNotesModal
+        isOpen={releaseNotesOpen}
+        title={releaseNotesTitle}
+        notes={releaseNotesBody}
+        onClose={() => setReleaseNotesOpen(false)}
+      />
       <InstallModal
         app={installModalAppId ? apps.find((item) => item.id === installModalAppId) ?? null : null}
         isOpen={!!installModalAppId}
         onClose={() => setInstallModalAppId(null)}
+        defaultInstallDir={installModalAppId ? defaultInstallDirs[installModalAppId] : undefined}
         onInstall={(options) => {
           const app = apps.find((item) => item.id === installModalAppId);
           if (app) {
@@ -1366,3 +1610,15 @@ export default function App() {
     </AuthProvider>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+

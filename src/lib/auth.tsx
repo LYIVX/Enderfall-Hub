@@ -56,7 +56,7 @@ const fetchProfile = async (userId: string) => {
   if (!supabase) return null;
   const { data, error } = await supabase
     .from("web_profiles")
-    .select("display_name, avatar_url")
+    .select("display_name, avatar_url, is_admin")
     .eq("id", userId)
     .maybeSingle();
   if (error) {
@@ -159,17 +159,34 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const raw = localStorage.getItem(authOverrideKey);
       if (raw) {
         try {
-          const { access_token } = JSON.parse(raw) as { access_token?: string };
+          const { access_token, refresh_token } = JSON.parse(raw) as {
+            access_token?: string;
+            refresh_token?: string;
+          };
           if (access_token) {
             const payload = decodeJwt(access_token);
             const id = payload?.sub as string | undefined;
             const email = payload?.email as string | undefined;
             if (id) {
+              if (supabase && refresh_token) {
+                try {
+                  await supabase.auth.setSession({
+                    access_token,
+                    refresh_token,
+                  });
+                } catch {
+                  // ignore session sync failures
+                }
+              }
+              const userMetadata =
+                (payload?.user_metadata as Record<string, unknown> | undefined) ?? {};
+              const appMetadata =
+                (payload?.app_metadata as Record<string, unknown> | undefined) ?? {};
               setUser({
                 id,
                 email: email ?? null,
-                app_metadata: {},
-                user_metadata: {},
+                app_metadata: appMetadata,
+                user_metadata: userMetadata,
                 aud: "authenticated",
                 created_at: "",
               } as User);

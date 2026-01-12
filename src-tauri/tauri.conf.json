@@ -1,7 +1,7 @@
 {
   "build": {
-    "beforeBuildCommand": "npm run build",
-    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build:web",
+    "beforeDevCommand": "npm run dev:web",
     "devPath": "http://localhost:5173",
     "distDir": "../dist"
   },
@@ -20,7 +20,7 @@
         "writeFile": true,
         "createDir": true,
         "removeFile": true,
-        "scope": ["$APPDATA/Enderfall/**"]
+        "scope": ["$APPDATA/Enderfall/**", "$LOCALDATA/Enderfall/**"]
       },
       "http": {
         "all": true,
@@ -28,6 +28,9 @@
       },
       "shell": {
         "open": true
+      },
+      "path": {
+        "all": true
       }
     },
     "windows": [

@@ -8,7 +8,7 @@ edition = "2021"
 tauri-build = { version = "1.5", features = [] }
 
 [dependencies]
-tauri = { version = "1.5", features = [ "path-all", "fs-remove-file", "fs-read-file", "fs-create-dir", "fs-write-file", "http-all", "dialog-open", "shell-open"] }
+tauri = { version = "1.5", features = [ "system-tray", "path-all", "fs-remove-file", "fs-read-file", "fs-create-dir", "fs-write-file", "http-all", "dialog-open", "shell-open", "icon-ico" ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 msi-extract = "0.2.0"
@@ -16,4 +16,6 @@ reqwest = { version = "0.12.9", default-features = false, features = ["blocking"
 tauri-plugin-single-instance = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1", package = "tauri-plugin-single-instance" }
 
 [features]
+default = ["system-tray", "custom-protocol"]
+system-tray = []
 custom-protocol = ["tauri/custom-protocol"]

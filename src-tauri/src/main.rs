@@ -4,10 +4,117 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use msi_extract::MsiExtractor;
 use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
+
+#[cfg(feature = "system-tray")]
+use tauri::{CustomMenuItem, SystemTray, SystemTrayEvent, SystemTrayMenu};
+
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+struct HubPreferences {
+  #[serde(default)]
+  open_on_startup: bool,
+  #[serde(default)]
+  close_to_tray: bool,
+  #[serde(default)]
+  minimize_to_tray: bool,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  install_dir: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  installer_type: Option<String>,
+}
+
+struct AppState {
+  prefs: Mutex<HubPreferences>,
+}
+
+fn hub_preferences_path() -> Option<PathBuf> {
+  let base = tauri::api::path::local_data_dir()?;
+  Some(base.join("EnderFall").join("Hub").join("preferences.json"))
+}
+
+fn load_hub_preferences() -> HubPreferences {
+  let prefs_path = match hub_preferences_path() {
+    Some(path) => path,
+    None => return HubPreferences::default(),
+  };
+  let data = match std::fs::read(&prefs_path) {
+    Ok(data) => data,
+    Err(_) => return HubPreferences::default(),
+  };
+  serde_json::from_slice(&data).unwrap_or_default()
+}
+
+fn write_hub_preferences(prefs: &HubPreferences) -> Result<(), String> {
+  let prefs_path = hub_preferences_path().ok_or("Missing local data dir")?;
+  if let Some(parent) = prefs_path.parent() {
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+  }
+  let data = serde_json::to_vec_pretty(prefs).map_err(|e| e.to_string())?;
+  std::fs::write(prefs_path, data).map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HubPreferencesUpdate {
+  open_on_startup: Option<bool>,
+  close_to_tray: Option<bool>,
+  minimize_to_tray: Option<bool>,
+}
+
+#[tauri::command]
+fn get_hub_preferences() -> Result<HubPreferences, String> {
+  Ok(load_hub_preferences())
+}
+
+#[tauri::command]
+fn set_hub_preferences(
+  update: HubPreferencesUpdate,
+  state: tauri::State<AppState>,
+) -> Result<HubPreferences, String> {
+  let mut prefs = load_hub_preferences();
+  if let Some(value) = update.open_on_startup {
+    prefs.open_on_startup = value;
+  }
+  if let Some(value) = update.close_to_tray {
+    prefs.close_to_tray = value;
+  }
+  if let Some(value) = update.minimize_to_tray {
+    prefs.minimize_to_tray = value;
+  }
+  write_hub_preferences(&prefs)?;
+  if let Ok(mut guard) = state.prefs.lock() {
+    *guard = prefs.clone();
+  }
+  Ok(prefs)
+}
+
+#[cfg(target_os = "windows")]
+fn apply_window_icon(app: &tauri::App) {
+  let icon_path = app
+    .path_resolver()
+    .resolve_resource("icons/icon.ico")
+    .or_else(|| {
+      let cwd = std::env::current_dir().ok()?;
+      let candidates = [
+        cwd.join("icons").join("icon.ico"),
+        cwd.join("src-tauri").join("icons").join("icon.ico"),
+        cwd.join("..").join("icons").join("icon.ico"),
+        cwd.join("..").join("src-tauri").join("icons").join("icon.ico"),
+      ];
+      candidates.into_iter().find(|path| path.exists())
+    });
+
+  if let (Some(window), Some(path)) = (app.get_window("main"), icon_path) {
+    let _ = window.set_icon(tauri::Icon::File(path));
+  }
+}
 
 #[cfg(target_os = "windows")]
 fn create_shortcut(shortcut_path: &Path, target_path: &Path, working_dir: &Path) -> Result<(), String> {
@@ -131,6 +238,44 @@ fn run_dev_app(cwd: String, command: Vec<String>) -> Result<(), String> {
   };
   cmd.current_dir(cwd);
   cmd.spawn().map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+#[tauri::command]
+fn create_shortcuts(
+  exe_path: String,
+  app_name: String,
+  create_desktop_shortcut: bool,
+  create_start_menu_shortcut: bool,
+) -> Result<(), String> {
+  let target = PathBuf::from(&exe_path);
+  if !target.exists() {
+    return Err("Executable not found.".to_string());
+  }
+  let working_dir = target
+    .parent()
+    .ok_or_else(|| "Executable directory missing.".to_string())?;
+
+  if create_desktop_shortcut {
+    if let Some(desktop) = tauri::api::path::desktop_dir() {
+      let shortcut = desktop.join(format!("{}.lnk", app_name));
+      create_shortcut(&shortcut, &target, working_dir)?;
+    }
+  }
+
+  if create_start_menu_shortcut {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+      let start_menu = PathBuf::from(appdata)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+        .join("Enderfall");
+      let shortcut = start_menu.join(format!("{}.lnk", app_name));
+      create_shortcut(&shortcut, &target, working_dir)?;
+    }
+  }
+
   Ok(())
 }
 
@@ -287,17 +432,85 @@ fn get_program_files_dir() -> Result<String, String> {
 }
 
 fn main() {
-  let builder = tauri::Builder::default();
-  let builder = if cfg!(debug_assertions) {
-    builder
-  } else {
-    builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-      if let Some(window) = app.get_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
+  let builder = tauri::Builder::default().manage(AppState {
+    prefs: Mutex::new(load_hub_preferences()),
+  });
+  let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    if let Some(window) = app.get_window("main") {
+      let _ = window.show();
+      let _ = window.set_focus();
+    }
+  }));
+  let builder = builder.setup(|app| {
+    #[cfg(target_os = "windows")]
+    apply_window_icon(app);
+    Ok(())
+  });
+
+  #[cfg(feature = "system-tray")]
+  let builder = builder
+    .system_tray(
+      SystemTray::new().with_menu(
+        SystemTrayMenu::new()
+          .add_item(CustomMenuItem::new("show", "Show"))
+          .add_item(CustomMenuItem::new("quit", "Quit")),
+      ),
+    )
+    .on_system_tray_event(|app, event| match event {
+      SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
+        "show" => {
+          if let Some(window) = app.get_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+          }
+        }
+        "quit" => {
+          std::process::exit(0);
+        }
+        _ => {}
+      },
+      SystemTrayEvent::LeftClick { .. } | SystemTrayEvent::DoubleClick { .. } => {
+        if let Some(window) = app.get_window("main") {
+          let _ = window.show();
+          let _ = window.set_focus();
+        }
       }
-    }))
-  };
+      _ => {}
+    });
+
+  let builder = builder.on_window_event(|event| {
+    let window = event.window();
+    if window.label() != "main" {
+      return;
+    }
+    if let Some(state) = window.try_state::<AppState>() {
+      if let Ok(prefs) = state.prefs.lock() {
+        match event.event() {
+          #[cfg(feature = "system-tray")]
+          tauri::WindowEvent::CloseRequested { api, .. } => {
+            if prefs.close_to_tray {
+              let _ = window.hide();
+              api.prevent_close();
+            }
+          }
+          #[cfg(not(feature = "system-tray"))]
+          tauri::WindowEvent::CloseRequested { .. } => {}
+          tauri::WindowEvent::Resized(_) => {
+            if prefs.minimize_to_tray {
+              #[cfg(feature = "system-tray")]
+              {
+                if let Ok(true) = window.is_minimized() {
+                  let _ = window.hide();
+                }
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+  });
+
   builder
     .invoke_handler(tauri::generate_handler![
       path_exists,
@@ -305,11 +518,14 @@ fn main() {
       launch_path,
       run_installer,
       run_dev_app,
+      create_shortcuts,
       uninstall_app,
       install_msi_payload,
       download_installer,
       get_current_exe_path,
-      get_program_files_dir
+      get_program_files_dir,
+      get_hub_preferences,
+      set_hub_preferences
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

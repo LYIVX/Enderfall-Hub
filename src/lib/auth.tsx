@@ -8,6 +8,7 @@
 } from "react";
 import type { User } from "@supabase/supabase-js";
 import { fetch as tauriFetch } from "@tauri-apps/api/http";
+import { clearLaunchToken, clearProfileCache } from "@enderfall/runtime";
 import { supabase, supabaseAnonKey, supabaseUrl } from "./supabase";
 
 export type WebProfile = {
@@ -28,6 +29,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const isTauri = typeof window !== "undefined" && "__TAURI_IPC__" in window;
 const authOverrideKey = "appbrowser-auth-override";
+const entitlementsCacheKey = "appbrowser-entitlements-cache";
 
 const decodeJwt = (token: string) => {
   try {
@@ -54,16 +56,19 @@ const buildFallbackProfile = (payload: Record<string, unknown> | null, email?: s
 
 const fetchProfile = async (userId: string) => {
   if (!supabase) return null;
-  const { data, error } = await supabase
-    .from("web_profiles")
-    .select("display_name, avatar_url, is_admin")
-    .eq("id", userId)
-    .maybeSingle();
-  if (error) {
-    console.warn("Failed to load web profile.", error.message);
-    return null;
-  }
-  return data ?? null;
+  const fromWebProfiles = async (column: "id" | "user_id") => {
+    const { data, error } = await supabase
+      .from("web_profiles")
+      .select("display_name, avatar_url, is_admin")
+      .eq(column, userId)
+      .maybeSingle();
+    if (error) {
+      console.warn("Failed to load web profile.", error.message);
+      return null;
+    }
+    return data ?? null;
+  };
+  return (await fromWebProfiles("id")) ?? (await fromWebProfiles("user_id"));
 };
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
@@ -93,32 +98,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         return buildFallbackProfile(payload, email);
       }
       try {
-        const response = await tauriFetch<WebProfile[]>(
-          `${supabaseUrl}/rest/v1/web_profiles?select=display_name,avatar_url,is_admin&id=eq.${encodeURIComponent(
-            userId
-          )}&limit=1`,
-          {
-            method: "GET",
-            headers: {
-              apikey: supabaseAnonKey,
-              Authorization: `Bearer ${accessToken}`,
-              Accept: "application/json",
-            },
-          }
-        );
-        const webProfile =
-          response.status >= 400 ? null : response.data?.[0] ?? null;
-
-        const needsAdmin =
-          !webProfile || webProfile.is_admin === undefined || webProfile.is_admin === null;
-        const needsAvatar = !webProfile || !webProfile.avatar_url;
-        const needsDisplay = !webProfile || !webProfile.display_name;
-
-        if (needsAdmin || needsAvatar || needsDisplay) {
-          const profileResponse = await tauriFetch<
-            { username?: string | null; avatar_url?: string | null; is_admin?: boolean | null }[]
-          >(
-            `${supabaseUrl}/rest/v1/profiles?select=username,avatar_url,is_admin&id=eq.${encodeURIComponent(
+        const fetchWebProfile = async (column: "id" | "user_id") => {
+          const response = await tauriFetch<WebProfile[]>(
+            `${supabaseUrl}/rest/v1/web_profiles?select=display_name,avatar_url,is_admin&${column}=eq.${encodeURIComponent(
               userId
             )}&limit=1`,
             {
@@ -130,8 +112,39 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
               },
             }
           );
+          return response.status >= 400 ? null : response.data?.[0] ?? null;
+        };
+        const webProfile =
+          (await fetchWebProfile("id")) ?? (await fetchWebProfile("user_id"));
+
+        const needsAdmin =
+          !webProfile || webProfile.is_admin === undefined || webProfile.is_admin === null;
+        const needsAvatar = !webProfile || !webProfile.avatar_url;
+        const needsDisplay = !webProfile || !webProfile.display_name;
+
+        if (needsAdmin || needsAvatar || needsDisplay) {
+          const fetchProfileRow = async (column: "id" | "user_id") => {
+            const profileResponse = await tauriFetch<
+              { username?: string | null; avatar_url?: string | null; is_admin?: boolean | null }[]
+            >(
+              `${supabaseUrl}/rest/v1/profiles?select=username,avatar_url,is_admin&${column}=eq.${encodeURIComponent(
+                userId
+              )}&limit=1`,
+              {
+                method: "GET",
+                headers: {
+                  apikey: supabaseAnonKey,
+                  Authorization: `Bearer ${accessToken}`,
+                  Accept: "application/json",
+                },
+              }
+            );
+            return profileResponse.status >= 400
+              ? null
+              : profileResponse.data?.[0] ?? null;
+          };
           const profileRow =
-            profileResponse.status >= 400 ? null : profileResponse.data?.[0] ?? null;
+            (await fetchProfileRow("id")) ?? (await fetchProfileRow("user_id"));
 
           return {
             display_name:
@@ -260,6 +273,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const signOut = async () => {
     if (isTauri) {
       localStorage.removeItem(authOverrideKey);
+      localStorage.removeItem(entitlementsCacheKey);
+      await clearLaunchToken("enderfall-hub");
+      await clearProfileCache();
       setUser(null);
       setProfile(null);
       window.dispatchEvent(new Event("appbrowser-auth-override-changed"));

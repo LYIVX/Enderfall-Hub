@@ -28,7 +28,7 @@ import {
   type LaunchToken,
 } from "@enderfall/runtime";
 
-import { Button, Dropdown, Input, MainHeader, Panel, PreferencesModal, StackedCard, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
+import { Button, Dropdown, Input, MainHeader, Panel, PreferencesModal, SideMenu, SideMenuSubmenu, StackedCard, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
 
 import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from "./lib/supabase";
 
@@ -3204,41 +3204,81 @@ const AppContent = () => {
 
             content: (
 
-              <div className="ef-menu-item has-submenu" role="button" tabIndex={0}>
+              <SideMenu resetKey={menuOpen === "view" ? "open" : "closed"}>
 
-                <span>Theme</span>
+                <SideMenuSubmenu
 
-                <span className="ef-menu-sub-caret">
+                  id="theme"
 
-                  <IconChevronDown />
+                  className="ef-menu-group"
 
-                </span>
+                  panelClassName="ef-menu-sub ef-menu-sub--header"
 
-                <div className="ef-menu-sub">
+                  enableViewportFlip
 
-                  {themeOptions.map((item) => (
+                  variant="header"
+
+                  trigger={(triggerProps) => (
 
                     <button
-
-                      key={item.value}
 
                       className="ef-menu-item"
 
                       type="button"
 
-                      onClick={() => setThemeMode(item.value)}
+                      onClick={triggerProps.onClick}
+
+                      aria-expanded={triggerProps["aria-expanded"]}
+
+                      disabled={triggerProps.disabled}
+
+                    >
+
+                      <span>Theme</span>
+
+                      <span className="ef-menu-sub-caret">
+
+                        <IconChevronDown />
+
+                      </span>
+
+                    </button>
+
+                  )}
+
+                >
+
+                  {themeOptions.map((item) => (
+
+                    <Button
+
+                      key={item.value}
+
+                      className={`theme-preview theme-preview--${item.value}`}
+
+                      variant="primary"
+
+                      type="button"
+
+                      onClick={() => {
+
+                        setThemeMode(item.value);
+
+                        closeMenu();
+
+                      }}
 
                     >
 
                       {item.label}
 
-                    </button>
+                    </Button>
 
                   ))}
 
-                </div>
+                </SideMenuSubmenu>
 
-              </div>
+              </SideMenu>
 
             ),
 

@@ -18,14 +18,15 @@ import { appDataDir, join, localDataDir } from "@tauri-apps/api/path";
 import { AuthProvider, useAuth } from "./lib/auth";
 
 import {
+  emitAuthOverrideChanged,
   clearLaunchToken,
-  readLaunchToken,
+  readAuthOverrideTokens,
+  writeSharedAuthOverrideTokens,
   readSharedPreferences,
+  writeAuthOverrideTokens,
   writeAppBrowserPath,
-  writeLaunchToken,
   writeProfileCache,
   writeSharedPreferences,
-  type LaunchToken,
 } from "@enderfall/runtime";
 
 import { Button, Dropdown, Input, MainHeader, Panel, PreferencesModal, SideMenu, SideMenuSubmenu, StackedCard, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
@@ -326,28 +327,11 @@ const IconChevronDown = () => (
 
 
 
-const authOverrideKey = "appbrowser-auth-override";
 const entitlementsCacheKey = "appbrowser-entitlements-cache";
 
 
 
-const getOverrideTokens = () => {
-
-  const raw = localStorage.getItem(authOverrideKey);
-
-  if (!raw) return null;
-
-  try {
-
-    return JSON.parse(raw) as { access_token?: string; refresh_token?: string };
-
-  } catch {
-
-    return null;
-
-  }
-
-};
+const getOverrideTokens = () => readAuthOverrideTokens();
 
 const readEntitlementsCache = (userId: string): EntitlementsCache | null => {
   const raw = localStorage.getItem(entitlementsCacheKey);
@@ -705,15 +689,15 @@ const LoginModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void 
 
     }
 
-    localStorage.setItem(
-
-      authOverrideKey,
-
-      JSON.stringify({ access_token: payload.access_token, refresh_token: payload.refresh_token })
-
-    );
-
-    window.dispatchEvent(new Event("appbrowser-auth-override-changed"));
+    writeAuthOverrideTokens({
+      access_token: payload.access_token,
+      refresh_token: payload.refresh_token,
+    });
+    await writeSharedAuthOverrideTokens({
+      access_token: payload.access_token,
+      refresh_token: payload.refresh_token,
+    });
+    emitAuthOverrideChanged();
 
   };
 
@@ -1535,7 +1519,6 @@ const AppContent = () => {
   const [entitlements, setEntitlements] = useState<Entitlement[]>([]);
   const [entitlementsLoaded, setEntitlementsLoaded] = useState(false);
   const [entitlementsError, setEntitlementsError] = useState<string | null>(null);
-  const [tokenSnapshot, setTokenSnapshot] = useState<LaunchToken | null>(null);
   const [cachedAdmin, setCachedAdmin] = useState<boolean | null>(null);
 
   const [installStatus, setInstallStatus] = useState<Record<string, boolean>>({});
@@ -1627,29 +1610,6 @@ const AppContent = () => {
       return null;
     }
   };
-
-  useEffect(() => {
-    if (!isTauri) return;
-    let active = true;
-
-    const loadToken = async () => {
-      const token = await readLaunchToken("enderfall-hub");
-      if (!active) return;
-      if (token && token.expiresAt > Date.now()) {
-        setTokenSnapshot(token);
-        return;
-      }
-      setTokenSnapshot(null);
-    };
-
-    loadToken();
-    const interval = window.setInterval(loadToken, 60 * 1000);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, []);
-
 
   useEffect(() => {
     if (!isTauri) return;
@@ -2090,11 +2050,8 @@ const AppContent = () => {
       const override = isTauri ? getOverrideTokens() : null;
       const accessToken = override?.access_token;
       if (isTauri && accessToken && supabaseUrl && supabaseAnonKey) {
-        const fetchAdmin = async (
-          table: "web_profiles" | "profiles",
-          column: "id" | "user_id"
-        ) => {
-          const url = `${supabaseUrl}/rest/v1/${table}?select=is_admin&${column}=eq.${encodeURIComponent(
+        const fetchAdmin = async () => {
+          const url = `${supabaseUrl}/rest/v1/profiles?select=is_admin&id=eq.${encodeURIComponent(
             user.id
           )}&limit=1`;
           const response = await tauriFetch<{ is_admin?: boolean | null }[]>(url, {
@@ -2109,13 +2066,7 @@ const AppContent = () => {
           return response.data?.[0]?.is_admin ?? null;
         };
         try {
-          const webAdmin =
-            (await fetchAdmin("web_profiles", "id")) ??
-            (await fetchAdmin("web_profiles", "user_id"));
-          if (webAdmin !== null && webAdmin !== undefined) return webAdmin;
-          const profileAdmin =
-            (await fetchAdmin("profiles", "id")) ??
-            (await fetchAdmin("profiles", "user_id"));
+          const profileAdmin = await fetchAdmin();
           if (profileAdmin !== null && profileAdmin !== undefined) return profileAdmin;
         } catch {
           // ignore fetch failures
@@ -2124,30 +2075,6 @@ const AppContent = () => {
       if (!supabase) return cachedAdmin ?? false;
       try {
         const { data } = await supabase
-          .from("web_profiles")
-          .select("is_admin")
-          .eq("id", user.id)
-          .maybeSingle();
-        if (data?.is_admin !== undefined && data?.is_admin !== null) {
-          return data.is_admin;
-        }
-      } catch {
-        // ignore missing row
-      }
-      try {
-        const { data } = await supabase
-          .from("web_profiles")
-          .select("is_admin")
-          .eq("user_id", user.id)
-          .maybeSingle();
-        if (data?.is_admin !== undefined && data?.is_admin !== null) {
-          return data.is_admin;
-        }
-      } catch {
-        // ignore missing row
-      }
-      try {
-        const { data } = await supabase
           .from("profiles")
           .select("is_admin")
           .eq("id", user.id)
@@ -2162,7 +2089,7 @@ const AppContent = () => {
         const { data } = await supabase
           .from("profiles")
           .select("is_admin")
-          .eq("user_id", user.id)
+          .eq("id", user.id)
           .maybeSingle();
         if (data?.is_admin !== undefined && data?.is_admin !== null) {
           return data.is_admin;
@@ -2308,23 +2235,12 @@ const AppContent = () => {
     const syncTokens = async () => {
 
       if (!user) {
-
-        if (tokenSnapshot && tokenSnapshot.expiresAt > Date.now()) {
-          return;
-        }
         await clearLaunchToken("enderfall-hub");
 
         return;
 
       }
-
-      const tokenAccess = !!tokenSnapshot && tokenSnapshot.expiresAt > Date.now();
-      if ((!entitlementsLoaded || entitlementsError) && !tokenAccess) return;
-
-      const allowedApps =
-        entitlementsLoaded && !entitlementsError
-          ? entitlements.map((entry) => entry.app_id)
-          : tokenSnapshot?.entitlements ?? [];
+      if (!entitlementsLoaded || entitlementsError) return;
 
       const displayName =
 
@@ -2337,8 +2253,7 @@ const AppContent = () => {
       const avatarUrl = rawAvatarUrl;
       const avatarPath = await cacheAvatar(rawAvatarUrl, user.id);
 
-      const isAdmin = profile?.is_admin ?? cachedAdmin ?? tokenSnapshot?.isAdmin ?? false;
-      const expiresAt = Date.now() + 5 * 60 * 1000;
+      const isAdmin = profile?.is_admin ?? cachedAdmin ?? false;
 
       await writeProfileCache({
         userId: user.id,
@@ -2347,29 +2262,6 @@ const AppContent = () => {
         avatarPath,
         email: user.email ?? null,
         updatedAt: Date.now(),
-      });
-
-      await writeLaunchToken({
-
-        appId: "enderfall-hub",
-
-        userId: user.id,
-
-        isAdmin,
-
-        entitlements: allowedApps,
-
-        expiresAt,
-
-        appBrowserPath,
-
-        displayName,
-
-        avatarUrl,
-        avatarPath,
-
-        email: user.email ?? null,
-
       });
 
     };
@@ -2393,8 +2285,6 @@ const AppContent = () => {
     entitlementsError,
     profile?.is_admin,
     cachedAdmin,
-    appBrowserPath,
-    tokenSnapshot,
   ]);
 
 
@@ -2976,13 +2866,8 @@ const AppContent = () => {
 
         const showDevActions = import.meta.env.DEV && isTauri;
 
-        const tokenAccess = !!tokenSnapshot && tokenSnapshot.expiresAt > Date.now();
-        const tokenIsAdmin = tokenAccess ? tokenSnapshot?.isAdmin ?? false : false;
-        const tokenEntitled =
-          tokenAccess &&
-          (tokenIsAdmin ||
-            tokenSnapshot?.entitlements.includes(app.id) ||
-            tokenSnapshot?.entitlements.includes("all-apps"));
+        const tokenIsAdmin = false;
+        const tokenEntitled = false;
         const isAdmin =
 
           profile?.is_admin ??
@@ -3054,8 +2939,6 @@ const AppContent = () => {
 
       cachedAdmin,
 
-      tokenSnapshot,
-
       releaseInfoByApp,
     ]
 
@@ -3108,13 +2991,13 @@ const AppContent = () => {
   const overrideTokens = isTauri ? getOverrideTokens() : null;
   const authStatusLines = [
     `Auth: tauri=${isTauri ? "yes" : "no"}, override=${overrideTokens ? "yes" : "no"}, token=${
-      tokenSnapshot ? "yes" : "no"
+      "no"
     }`,
     `Entitlements: ${entitlements.length}, loaded=${entitlementsLoaded ? "yes" : "no"}, error=${
       entitlementsError ? "yes" : "no"
     }`,
     `Admin: profile=${profile?.is_admin ?? "null"}, cached=${cachedAdmin ?? "null"}, token=${
-      tokenSnapshot?.isAdmin ?? "null"
+      "null"
     }`,
   ];
 

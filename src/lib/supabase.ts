@@ -53,19 +53,43 @@ const tauriFetchAdapter: typeof fetch = async (input, init) => {
   return new Response(responseBody, { status: response.status, headers: responseHeaders });
 };
 
-const createSupabaseClient = () =>
-  createClient(supabaseUrl, supabaseAnonKey, {
+const createSupabaseClient = () => {
+  if (typeof window !== "undefined") {
+    try {
+      const projectRef = (() => {
+        try {
+          const url = new URL(supabaseUrl);
+          return url.hostname.split(".")[0] ?? "";
+        } catch {
+          return "";
+        }
+      })();
+      const legacyKey = "appbrowser-auth";
+      const defaultKey = projectRef ? `sb-${projectRef}-auth-token` : "";
+      if (defaultKey) {
+        const legacyValue = window.localStorage.getItem(legacyKey);
+        const defaultValue = window.localStorage.getItem(defaultKey);
+        if (legacyValue && !defaultValue) {
+          window.localStorage.setItem(defaultKey, legacyValue);
+        }
+      }
+    } catch {
+      // ignore storage migration errors
+    }
+  }
+
+  return createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       persistSession: !isTauri,
       autoRefreshToken: !isTauri,
       detectSessionInUrl: !isTauri,
-      storageKey: "appbrowser-auth",
       lock: !isTauri,
     },
     global: {
       fetch: tauriFetchAdapter,
     },
   });
+};
 
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? (globalThis.__appBrowserSupabase ?? (globalThis.__appBrowserSupabase = createSupabaseClient()))

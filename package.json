@@ -11,7 +11,7 @@
     "dev:tauri": "tauri dev",
     "build:tauri": "tauri build",
     "dev:web": "vite",
-    "build:web": "vite build",
+    "build:web": "pnpm --filter @enderfall/ui build && vite build",
     "postbuild": "node scripts/rename-msi.cjs && node scripts/rename-exe.cjs"
   },
   "dependencies": {

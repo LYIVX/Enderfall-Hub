@@ -29,7 +29,7 @@ import {
   writeSharedPreferences,
 } from "@enderfall/runtime";
 
-import { Button, Dropdown, Input, MainHeader, Panel, PreferencesModal, SideMenu, SideMenuSubmenu, StackedCard, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
+import { Button, Dropdown, Input, MainHeader, Panel, PreferencesModal, SideMenu, SideMenuSubmenu, StackedCard, Tabs, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
 
 import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from "./lib/supabase";
 
@@ -3262,11 +3262,11 @@ const AppContent = () => {
 
             ) : (
 
-              <button className="primary" onClick={() => setShowLogin(true)}>
+              <Button className="primary" onClick={() => setShowLogin(true)}>
 
                 Login
 
-              </button>
+              </Button>
 
             )}
 
@@ -3275,8 +3275,6 @@ const AppContent = () => {
         }
 
       />
-
-
 
       <section className="hero">
 
@@ -3427,7 +3425,7 @@ const AppContent = () => {
 
                 <>
 
-                  <button
+                  <Button
 
                     className="primary"
 
@@ -3439,7 +3437,7 @@ const AppContent = () => {
 
                     Open app
 
-                  </button>
+                  </Button>
 
                   <Button
 
@@ -3465,9 +3463,7 @@ const AppContent = () => {
 
               ) : (
 
-                <button
-
-                  className="ghost"
+                <Button
 
                   onClick={() => setInstallModalAppId(app.id)}
 
@@ -3477,17 +3473,17 @@ const AppContent = () => {
 
                   Install
 
-                </button>
+                </Button>
 
               )}
 
               {devAvailable ? (
 
-                <button className="ghost" type="button" onClick={() => launchDevApp(app)}>
+                <Button className="success" type="button" onClick={() => launchDevApp(app)}>
 
                   Open local (dev)
 
-                </button>
+                </Button>
 
               ) : null}
 
@@ -3529,11 +3525,12 @@ const AppContent = () => {
 
               </Button>
 
-              <button
+              <Button
 
-                className={`icon-action small ${isRefreshing ? "spin" : ""}`}
 
                 type="button"
+
+                variant="danger"
 
                 title="Refresh"
 
@@ -3545,17 +3542,20 @@ const AppContent = () => {
 
                 <FaSyncAlt />
 
-              </button>
+              </Button>
 
               {updateAvailable ? <span className="badge-alt">Update available</span> : null}
 
               {app.supportsPremium && !entitled ? (
 
-                <button className="locked" onClick={() => setShowLogin(true)}>
+                <Button 
+                
+                  variant="ghost"
+                  onClick={() => setShowLogin(true)}>
 
                   Premium locked
 
-                </button>
+                </Button>
 
               ) : null}
 
@@ -3599,11 +3599,11 @@ const AppContent = () => {
 
         </div>
 
-        <button className="cta-primary" onClick={() => window.open("https://enderfall.co.uk/contact", "_blank")}>
+        <Button variant="primary" subvariant="glow" onClick={() => window.open("https://enderfall.co.uk/contact", "_blank")}>
 
           Contact the team
 
-        </button>
+        </Button>
 
       </Panel>
 

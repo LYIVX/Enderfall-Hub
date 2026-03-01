@@ -435,6 +435,7 @@ fn main() {
   let builder = tauri::Builder::default().manage(AppState {
     prefs: Mutex::new(load_hub_preferences()),
   });
+  #[cfg(not(debug_assertions))]
   let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
     if let Some(window) = app.get_window("main") {
       let _ = window.show();
